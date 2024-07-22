@@ -179,68 +179,56 @@ void inverse_areion_512(__m128i dst[4], const __m128i src[4])
 
 void permute_areion_256u8(uint8_t dst[32], const uint8_t src[32])
 {
-    const __m128i_u *src_p = (const __m128i_u *)src;
-    __m128i_u *dst_p = (__m128i_u *)dst;
-
     __m128i x[2] = {
-        _mm_loadu_si128(&src_p[0]),
-        _mm_loadu_si128(&src_p[1])
+        _mm_loadu_si128((const __m128i*)&src[0]),
+        _mm_loadu_si128((const __m128i*)&src[16])
     };
     __m128i y[2];
     permute_areion_256(y, x);
-    _mm_storeu_si128(&dst_p[0], y[0]);
-    _mm_storeu_si128(&dst_p[1], y[1]);
+    _mm_storeu_si128((__m128i*)&dst[0], y[0]);
+    _mm_storeu_si128((__m128i*)&dst[16], y[1]);
 }
 
 void inverse_areion_256u8(uint8_t dst[32], const uint8_t src[32])
 {
-    const __m128i_u *src_p = (const __m128i_u *)src;
-    __m128i_u *dst_p = (__m128i_u *)dst;
-
     __m128i x[2] = {
-        _mm_loadu_si128(&src_p[0]),
-        _mm_loadu_si128(&src_p[1])
+        _mm_loadu_si128((const __m128i*)&src[0]),
+        _mm_loadu_si128((const __m128i*)&src[16])
     };
     __m128i y[2];
     inverse_areion_256(y, x);
-    _mm_storeu_si128(&dst_p[0], y[0]);
-    _mm_storeu_si128(&dst_p[1], y[1]);
+    _mm_storeu_si128((__m128i*)&dst[0], y[0]);
+    _mm_storeu_si128((__m128i*)&dst[16], y[1]);
 }
 
 void permute_areion_512u8(uint8_t dst[64], const uint8_t src[64])
 {
-    const __m128i_u *src_p = (const __m128i_u *)src;
-    __m128i_u *dst_p = (__m128i_u *)dst;
-
     __m128i x[4] = {
-        _mm_loadu_si128(&src_p[0]),
-        _mm_loadu_si128(&src_p[1]),
-        _mm_loadu_si128(&src_p[2]),
-        _mm_loadu_si128(&src_p[3])
+        _mm_loadu_si128((const __m128i*)&src[0]),
+        _mm_loadu_si128((const __m128i*)&src[16]),
+        _mm_loadu_si128((const __m128i*)&src[32]),
+        _mm_loadu_si128((const __m128i*)&src[48])
     };
     __m128i y[4];
     permute_areion_512(y, x);
-    _mm_storeu_si128(&dst_p[0], y[0]);
-    _mm_storeu_si128(&dst_p[1], y[1]);
-    _mm_storeu_si128(&dst_p[2], y[2]);
-    _mm_storeu_si128(&dst_p[3], y[3]);
+    _mm_storeu_si128((__m128i*)&dst[0], y[0]);
+    _mm_storeu_si128((__m128i*)&dst[16], y[1]);
+    _mm_storeu_si128((__m128i*)&dst[32], y[2]);
+    _mm_storeu_si128((__m128i*)&dst[48], y[3]);
 }
 
 void inverse_areion_512u8(uint8_t dst[64], const uint8_t src[64])
 {
-    const __m128i_u *src_p = (const __m128i_u *)src;
-    __m128i_u *dst_p = (__m128i_u *)dst;
-
     __m128i x[4] = {
-        _mm_loadu_si128(&src_p[0]),
-        _mm_loadu_si128(&src_p[1]),
-        _mm_loadu_si128(&src_p[2]),
-        _mm_loadu_si128(&src_p[3])
+        _mm_loadu_si128((const __m128i*)&src[0]),
+        _mm_loadu_si128((const __m128i*)&src[16]),
+        _mm_loadu_si128((const __m128i*)&src[32]),
+        _mm_loadu_si128((const __m128i*)&src[48])
     };
     __m128i y[4];
     inverse_areion_512(y, x);
-    _mm_storeu_si128(&dst_p[0], y[0]);
-    _mm_storeu_si128(&dst_p[1], y[1]);
-    _mm_storeu_si128(&dst_p[2], y[2]);
-    _mm_storeu_si128(&dst_p[3], y[3]);
+    _mm_storeu_si128((__m128i*)&dst[0], y[0]);
+    _mm_storeu_si128((__m128i*)&dst[16], y[1]);
+    _mm_storeu_si128((__m128i*)&dst[32], y[2]);
+    _mm_storeu_si128((__m128i*)&dst[48], y[3]);
 }
