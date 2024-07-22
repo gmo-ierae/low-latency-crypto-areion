@@ -8,6 +8,13 @@
 
 #define NUMBER_OF_LOOPS 12500000
 
+#ifdef _MSC_VER
+  #include <malloc.h>
+  #define ALLOCA(x) _malloca(x)
+#else
+  #define ALLOCA(x) __builtin_alloca(x)
+#endif
+
 static void fill(uint8_t *dst, size_t len)
 {
     for (size_t i = 0; i < len; i++) {
@@ -83,20 +90,20 @@ static void benchmark_aead()
 {
     {
         for (int len = 32; len < 4096; len *= 2) {
-            uint8_t in[len];
-            uint8_t out[len];
+            uint8_t *in = (uint8_t*)ALLOCA(len);
+            uint8_t *out = (uint8_t*)ALLOCA(len);
             uint8_t tag[16];
             uint8_t h[16];
             uint8_t n[16];
             uint8_t k[16];
-            fill(in, sizeof in);
+            fill(in, len);
             fill(h, sizeof h);
             fill(n, sizeof n);
             fill(k, sizeof k);
 
             ticks t0 = getticks();
             for (int i = 0; i < NUMBER_OF_LOOPS; i++) {
-                encrypt_areion_256_opp(out, tag, h, sizeof h, in, sizeof in, n, k);
+                encrypt_areion_256_opp(out, tag, h, sizeof h, in, len, n, k);
             }
             ticks t1 = getticks();
             double total_cycle = elapsed(t1, t0);
