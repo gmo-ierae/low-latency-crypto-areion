@@ -1,7 +1,7 @@
 # Low Latency Cryptography Areion
 ## About
 
-This software provides a reference code of the low-latency cryptographic permutation algorithm Areion and includes applications such as AEAD processing mode OPP. It should be noted that this software is provided as a reference and has not been optimized.
+This software provides a reference code of the low-latency cryptographic permutation algorithm Areion and includes applications such as hashing and AEAD processing mode OPP. It should be noted that this software is provided as a reference and has not been optimized.
 
 For more information on Areion, visit: https://eprint.iacr.org/2023/794
 
@@ -11,7 +11,7 @@ To run this software, the following environmental requirements are necessary.
 - x86-64 architecture (with AES-NI support)
 
 We have confirmed that this software can be built and executed on the following OS.
-- Ubuntu 20.04
+- Ubuntu 24.04
 
 Note. Ubuntu is a registered trademark or trademark of Canonical Ltd. in the United States and other countries.
 
@@ -26,14 +26,17 @@ $ cmake ..
 $ make
 ```
 
+### for android
+
+```
+$ NDK=~/Android/Sdk/ndk/26.1.10909125
+$ cd build
+$ cmake .. -DCMAKE_SYSTEM_NAME=Android -DCMAKE_ANDROID_NDK=$NDK -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a
+```
+
 ## How to Test
 ```
-$ ./areion-test
-```
-## How to Benchmark
-The results of benchmark are given in cpb (cycles per byte).
-```
-$ ./areion-benchmark 
+$ ./areion-test-ref
 ```
 
 # License

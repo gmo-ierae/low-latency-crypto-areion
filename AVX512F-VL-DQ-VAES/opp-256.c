@@ -15,15 +15,16 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include "impl-ref.h"
+#include "areion.h"
+#include "private/areion-private.h"
+
+#define PARALLEL_MAX 8
 
 typedef uint64_t opp_word_t;
 
 typedef struct {
-    uint64_t a;
-    uint64_t b;
-    uint64_t c;
-    uint64_t d;
+    __m128i ab;
+    __m128i cd;
 } opp_state_t;
 
 #define OPP_W 64           /* word size */
@@ -48,27 +49,28 @@ typedef struct {
 
 static inline opp_state_t load_state(const void *in)
 {
-    return *(opp_state_t *)in;
+    const __m128i_u *p = (const __m128i_u *)in;
+    return (opp_state_t){ _mm_loadu_si128(&p[0]), _mm_loadu_si128(&p[1]) };
 }
 
 static inline void store_state(void *out, const opp_state_t *s)
 {
-    *(opp_state_t *)out = *s;
+    __m128i_u *p = (__m128i_u *)out;
+    _mm_storeu_si128(&p[0], s->ab);
+    _mm_storeu_si128(&p[1], s->cd);
 }
 
 static inline opp_state_t zero_state()
 {
-    return (opp_state_t) { 0, 0, 0, 0 };
+    return (opp_state_t) { _mm_setzero_si128(), _mm_setzero_si128() };
 }
 
 static inline opp_state_t xor_state(opp_state_t x, opp_state_t y)
 {
-    opp_state_t v;
-    v.a = x.a ^ y.a;
-    v.b = x.b ^ y.b;
-    v.c = x.c ^ y.c;
-    v.d = x.d ^ y.d;
-    return v;
+    opp_state_t s;
+    s.ab = _mm_xor_si128(x.ab, y.ab);
+    s.cd = _mm_xor_si128(x.cd, y.cd);
+    return s;
 }
 
 static inline opp_word_t rotl(opp_word_t x, int c)
@@ -78,12 +80,12 @@ static inline opp_word_t rotl(opp_word_t x, int c)
 
 static inline void opp_permute(opp_state_t *state)
 {
-    permute_areion_256u8((uint8_t *)state, (const uint8_t *)state);
+    perm_256(&state->ab, &state->cd);
 }
 
 static inline void opp_permute_inverse(opp_state_t *state)
 {
-    inverse_areion_256u8((uint8_t *)state, (const uint8_t *)state);
+    inv_perm_256(&state->ab, &state->cd);
 }
 
 static inline opp_state_t opp_pad(const uint8_t *in, const size_t inlen)
@@ -125,12 +127,15 @@ static inline opp_state_t opp_init_mask(const unsigned char *k, const unsigned c
 */
 static inline opp_state_t opp_phi(opp_state_t x)
 {
+    opp_word_t a = _mm_extract_epi64(x.ab, 0);
+    opp_word_t b = _mm_extract_epi64(x.ab, 1);
+    opp_word_t c = _mm_extract_epi64(x.cd, 0);
+    opp_word_t d = _mm_extract_epi64(x.cd, 1);
+
     opp_state_t s;
 
-    s.a = x.b;
-    s.b = x.c;
-    s.c = x.d;
-    s.d = rotl(x.a, 3) ^ (x.d >> 5);
+    s.ab = _mm_set_epi64x(c, b);
+    s.cd = _mm_set_epi64x(rotl(a, 3) ^ (d >> 5), d);
 
     return s;
 }
@@ -140,6 +145,11 @@ static inline opp_state_t opp_alpha(opp_state_t x)
 {
    return opp_phi(x);
 }
+
+typedef struct __attribute__((aligned(64))) {
+    opp_state_t state[4];
+    opp_state_t mask;
+} opp_memory_t;
 
 /* beta(x) = phi(x) ^ x */
 static inline opp_state_t opp_beta(opp_state_t x)
@@ -170,110 +180,78 @@ static inline opp_state_t opp_mem_inverse(opp_state_t x, opp_state_t m)
     return xor_state(block, m);
 }
 
-static inline void opp_absorb_block(opp_state_t *state, opp_state_t *mask, const uint8_t * in)
+static inline void opp_absorb_lastblock(opp_memory_t *m, const uint8_t *in, size_t inlen)
 {
-    opp_state_t inb = load_state(in);
-    opp_state_t outb = opp_mem(inb, *mask);
-    *state = xor_state(*state, outb);
-    *mask = opp_alpha(*mask);
-}
-
-static inline void opp_absorb_lastblock(opp_state_t *state, opp_state_t *mask, const uint8_t *in, size_t inlen)
-{
-    *mask = opp_beta(*mask);
+    m->mask = opp_beta(m->mask);
     opp_state_t inb = opp_pad(in, inlen);
-    opp_state_t outb = opp_mem(inb, *mask);
-    *state = xor_state(*state, outb);
-    *mask = opp_alpha(*mask);
+    opp_state_t outb = opp_mem(inb, m->mask);
+    m->state[0] = xor_state(m->state[0], outb);
 }
 
-static inline void opp_encrypt_block(opp_state_t *state, opp_state_t *mask, uint8_t *out, const uint8_t *in)
+static inline void opp_encrypt_lastblock(opp_memory_t *m, uint8_t *out, const uint8_t *in, size_t inlen)
 {
-    opp_state_t inb = load_state(in);
-    opp_state_t outb = opp_mem(inb, *mask);
-    store_state(out, &outb);
-    *state = xor_state(*state, inb);
-    *mask = opp_alpha(*mask);
-}
-
-static inline void opp_encrypt_lastblock(opp_state_t *state, opp_state_t *mask, uint8_t *out, const uint8_t *in, size_t inlen)
-{
-    *mask = opp_beta(*mask);
+    m->mask = opp_beta(m->mask);
     opp_state_t inb = opp_pad(in, inlen);
-    opp_state_t block = opp_mem(zero_state(), *mask);
+    opp_state_t block = opp_mem(zero_state(), m->mask);
     opp_state_t outb = xor_state(block, inb);
     store_state_trunc(out, inlen, &outb);
-    *state = xor_state(*state, inb);
+    m->state[0] = xor_state(m->state[0], inb);
 }
 
-static inline void opp_decrypt_block(opp_state_t *state, opp_state_t *mask, uint8_t *out, const uint8_t *in)
+static inline void opp_decrypt_lastblock(opp_memory_t *m, uint8_t *out, const uint8_t *in, size_t inlen)
 {
-    opp_state_t inb = load_state(in);
-    opp_state_t outb = opp_mem_inverse(inb, *mask);
-    store_state(out, &outb);
-    *state = xor_state(*state, outb);
-    *mask = opp_alpha(*mask);
-}
-
-static inline void opp_decrypt_lastblock(opp_state_t *state, opp_state_t *mask, uint8_t *out, const uint8_t *in, size_t inlen)
-{
-    *mask = opp_beta(*mask);
+    m->mask = opp_beta(m->mask);
     opp_state_t inb = opp_pad(in, inlen);
-    opp_state_t block = opp_mem(zero_state(), *mask);
+    opp_state_t block = opp_mem(zero_state(), m->mask);
     opp_state_t outb = xor_state(block, inb);
     store_state_trunc(out, inlen, &outb);
     opp_state_t plainb = opp_pad(out, inlen);
-    *state = xor_state(*state, plainb);
+    m->state[0] = xor_state(m->state[0], plainb);
 }
+
+size_t opp_256_absorb_data_asm(opp_memory_t *m, void *dummy, const unsigned char *in, size_t inlen);
+size_t opp_256_encrypt_data_asm(opp_memory_t *m, unsigned char *out, const unsigned char *in, size_t inlen);
+size_t opp_256_decrypt_data_asm(opp_memory_t *m, unsigned char *out, const unsigned char *in, size_t inlen);
 
 /* low-level interface functions */
-static void opp_absorb_data(opp_state_t *state, opp_state_t *mask, const unsigned char *in, size_t inlen)
+static size_t opp_absorb_data(opp_memory_t *m, const unsigned char *in, size_t inlen, bool finalize)
 {
-    while (inlen >= BYTES(OPP_B))
+    size_t n = opp_256_absorb_data_asm(m, 0, in, inlen);
+    if (finalize && inlen - n > 0)
     {
-        opp_absorb_block(state, mask, in);
-        inlen -= BYTES(OPP_B);
-        in    += BYTES(OPP_B);
+        opp_absorb_lastblock(m, in + n, inlen - n);
+        n += inlen;
     }
-    if (inlen > 0)
-    {
-        opp_absorb_lastblock(state, mask, in, inlen);
-    }
+    return n;
 }
 
-static void opp_encrypt_data(opp_state_t *state, opp_state_t *mask, unsigned char *out, const unsigned char *in, size_t inlen)
+static size_t opp_encrypt_data(opp_memory_t *m, unsigned char *out, const unsigned char *in, size_t inlen, bool finalize)
 {
-    while (inlen >= BYTES(OPP_B))
+    size_t n = opp_256_encrypt_data_asm(m, out, in, inlen);
+    if (finalize && inlen - n > 0)
     {
-        opp_encrypt_block(state, mask, out, in);
-        inlen -= BYTES(OPP_B);
-        in    += BYTES(OPP_B);
-        out   += BYTES(OPP_B);
+        opp_encrypt_lastblock(m, out + n, in + n, inlen - n);
+        n += inlen;
     }
-    if (inlen > 0)
-    {
-        opp_encrypt_lastblock(state, mask, out, in, inlen);
-    }
+    return n;
 }
 
-static void opp_decrypt_data(opp_state_t *state, opp_state_t *mask, unsigned char *out, const unsigned char *in, size_t inlen)
+static size_t opp_decrypt_data(opp_memory_t *m, unsigned char *out, const unsigned char *in, size_t inlen, bool finalize)
 {
-    while (inlen >= BYTES(OPP_B))
+    size_t n = opp_256_decrypt_data_asm(m, out, in, inlen);
+    if (finalize && inlen - n > 0)
     {
-        opp_decrypt_block(state, mask, out, in);
-        inlen -= BYTES(OPP_B);
-        in    += BYTES(OPP_B);
-        out   += BYTES(OPP_B);
+        opp_decrypt_lastblock(m, out + n, in + n, inlen - n);
+        n += inlen;
     }
-    if (inlen > 0)
-    {
-        opp_decrypt_lastblock(state, mask, out, in, inlen);
-    }
+    return n;
 }
 
-static void opp_finalise(opp_state_t sa, opp_state_t se, opp_state_t mask, unsigned char *tag)
+static inline void opp_finalise(opp_memory_t *ma, opp_memory_t *me, unsigned char *tag)
 {
-    opp_state_t m = opp_beta(opp_beta(mask));
+    opp_state_t sa = xor_state(ma->state[0], xor_state(ma->state[1], xor_state(ma->state[2], ma->state[3])));
+    opp_state_t se = xor_state(me->state[0], xor_state(me->state[1], xor_state(me->state[2], me->state[3])));
+    opp_state_t m = opp_beta(opp_beta(me->mask));
     opp_state_t block = opp_mem(se, m);
     opp_state_t outb = xor_state(sa, block);
     store_state_trunc(tag, BYTES(OPP_T), &outb);
@@ -293,7 +271,7 @@ static int opp_verify_tag(const unsigned char *tag1, const unsigned char *tag2)
 
 
 /* high level interface functions */
-void encrypt_areion_256_opp_ref(
+void encrypt_areion_256_opp(
     uint8_t *c,
     uint8_t tag[AREION_256_OPP_TAG_LEN],
     const uint8_t *h, size_t hlen,
@@ -302,22 +280,26 @@ void encrypt_areion_256_opp_ref(
     const uint8_t key[AREION_256_OPP_KEY_LEN])
 {
     /* init checksums and masks */
-    opp_state_t sa = zero_state();
-    opp_state_t se = zero_state();
-    opp_state_t la = opp_init_mask(key, nonce);
-    opp_state_t le = opp_gamma(la);
+    opp_memory_t ma;
+    opp_memory_t me;
+    for (int i = 0; i < 4; i++) {
+        ma.state[i] = zero_state();
+        me.state[i] = zero_state();
+    }
+    ma.mask = opp_init_mask(key, nonce);
+    me.mask = opp_gamma(ma.mask);
 
     /* absorb header */
-    opp_absorb_data(&sa, &la, h, hlen);
+    opp_absorb_data(&ma, h, hlen, true);
 
     /* encrypt message */
-    opp_encrypt_data(&se, &le, c, m, mlen);
+    opp_encrypt_data(&me, c, m, mlen, true);
 
     /* finalise and extract tag */
-    opp_finalise(sa, se, le, tag);
+    opp_finalise(&ma, &me, tag);
 }
 
-int decrypt_areion_256_opp_ref(
+int decrypt_areion_256_opp(
     uint8_t *m,
     const uint8_t tag[AREION_256_OPP_TAG_LEN],
     const uint8_t *h, size_t hlen,
@@ -326,20 +308,24 @@ int decrypt_areion_256_opp_ref(
     const uint8_t key[AREION_256_OPP_KEY_LEN])
 {
     /* init checksums and masks */
-    opp_state_t sa = zero_state();
-    opp_state_t se = zero_state();
-    opp_state_t la = opp_init_mask(key, nonce);
-    opp_state_t le = opp_gamma(la);
+    opp_memory_t ma;
+    opp_memory_t me;
+    for (int i = 0; i < 4; i++) {
+        ma.state[i] = zero_state();
+        me.state[i] = zero_state();
+    }
+    ma.mask = opp_init_mask(key, nonce);
+    me.mask = opp_gamma(ma.mask);
 
     /* absorb header */
-    opp_absorb_data(&sa, &la, h, hlen);
+    opp_absorb_data(&ma, h, hlen, true);
 
     /* decrypt message */
-    opp_decrypt_data(&se, &le, m, c, clen);
+    opp_decrypt_data(&me, m, c, clen, true);
 
     /* finalise and extract tag */
     unsigned char cipher_tag[BYTES(OPP_T)];
-    opp_finalise(sa, se, le, cipher_tag);
+    opp_finalise(&ma, &me, cipher_tag);
 
     /* verify tag */
     int result = opp_verify_tag(tag, cipher_tag);
@@ -347,12 +333,10 @@ int decrypt_areion_256_opp_ref(
     return result;
 }
 
-struct areion_256_opp_ref_t
+struct areion_256_opp_t
 {
-    opp_state_t Sa;
-    opp_state_t Se;
-    opp_state_t La;
-    opp_state_t Le;
+    opp_memory_t Ma;
+    opp_memory_t Me;
     uint8_t ad_buf[32];
     uint8_t buf[32];
     int ad_partial_len;
@@ -360,29 +344,31 @@ struct areion_256_opp_ref_t
     bool enc;
 };
 
-areion_256_opp_ref_t *alloc_areion_256_opp_ref()
+areion_256_opp_t *alloc_areion_256_opp()
 {
-    return malloc(sizeof (areion_256_opp_ref_t));
+    return aligned_alloc(64, sizeof (areion_256_opp_t));
 }
 
-void free_areion_256_opp_ref(areion_256_opp_ref_t *state)
+void free_areion_256_opp(areion_256_opp_t *state)
 {
     free(state);
 }
 
-bool initialize_areion_256_opp_ref(bool enc, const uint8_t *n, const uint8_t *k, areion_256_opp_ref_t *state)
+bool initialize_areion_256_opp(bool enc, const uint8_t *n, const uint8_t *k, areion_256_opp_t *state)
 {
     state->enc = enc;
     state->ad_partial_len = 0;
     state->partial_len = 0;
-    state->Sa = zero_state();
-    state->Se = zero_state();
-    state->La = opp_init_mask(k, n);
-    state->Le = opp_gamma(state->La);
+    for (int i = 0; i < 4; i++) {
+        state->Ma.state[i] = zero_state();
+        state->Me.state[i] = zero_state();
+    }
+    state->Ma.mask = opp_init_mask(k, n);
+    state->Me.mask = opp_gamma(state->Ma.mask);
     return true;
 }
 
-bool update_areion_256_opp_ref(uint8_t *out, size_t *olen, size_t olimit, const uint8_t *in, size_t ilen, areion_256_opp_ref_t *state)
+bool update_areion_256_opp(uint8_t *out, size_t *olen, size_t olimit, const uint8_t *in, size_t ilen, areion_256_opp_t *state)
 {
     if (!out) {
         // AD
@@ -394,15 +380,13 @@ bool update_areion_256_opp_ref(uint8_t *out, size_t *olen, size_t olimit, const 
                 ilen--;
             }
             if (state->ad_partial_len == BYTES(OPP_B)) {
-                opp_absorb_block(&state->Sa, &state->La, state->ad_buf);
+                opp_absorb_data(&state->Ma, state->ad_buf, BYTES(OPP_B), false);
                 state->ad_partial_len = 0;
             }
         }
-        while (ilen >= BYTES(OPP_B)) {
-            opp_absorb_block(&state->Sa, &state->La, in);
-            in += BYTES(OPP_B);
-            ilen -= BYTES(OPP_B);
-        }
+        size_t n = opp_absorb_data(&state->Ma, in, ilen, false);
+        in += n;
+        ilen -= n;
         while (ilen > 0) {
             state->ad_buf[state->ad_partial_len] = *in;
             state->ad_partial_len++;
@@ -424,26 +408,23 @@ bool update_areion_256_opp_ref(uint8_t *out, size_t *olen, size_t olimit, const 
             }
             if (state->partial_len == BYTES(OPP_B)) {
                 if (state->enc) {
-                    opp_encrypt_block(&state->Se, &state->Le, out, state->buf);
+                    opp_encrypt_data(&state->Me, out, state->buf, BYTES(OPP_B), false);
                 } else {
-                    opp_decrypt_block(&state->Se, &state->Le, out, state->buf);
+                    opp_decrypt_data(&state->Me, out, state->buf, BYTES(OPP_B), false);
                 }
                 state->partial_len = 0;
                 out += BYTES(OPP_B);
                 *olen += BYTES(OPP_B);
             }
         }
-        while (ilen >= BYTES(OPP_B)) {
-            if (state->enc) {
-                opp_encrypt_block(&state->Se, &state->Le, out, in);
-            } else {
-                opp_decrypt_block(&state->Se, &state->Le, out, in);
-            }
-            in += BYTES(OPP_B);
-            ilen -= BYTES(OPP_B);
-            out += BYTES(OPP_B);
-            *olen += BYTES(OPP_B);
-        }
+        size_t n = state->enc
+            ? opp_encrypt_data(&state->Me, out, in, ilen, false)
+            : opp_decrypt_data(&state->Me, out, in, ilen, false);
+
+        in += n;
+        ilen -= n;
+        out += n;
+        *olen += n;
         while (ilen > 0) {
             state->buf[state->partial_len] = *in;
             state->partial_len++;
@@ -454,22 +435,22 @@ bool update_areion_256_opp_ref(uint8_t *out, size_t *olen, size_t olimit, const 
     return true;
 }
 
-bool finalize_areion_256_opp_ref(uint8_t *out, size_t *olen, size_t olimit, uint8_t *tag, areion_256_opp_ref_t *state)
+bool finalize_areion_256_opp(uint8_t *out, size_t *olen, size_t olimit, uint8_t *tag, areion_256_opp_t *state)
 {
     if (olimit < state->partial_len) {
         return false;
     }
     *olen = 0;
     if (state->ad_partial_len > 0) {
-        opp_absorb_lastblock(&state->Sa, &state->La, state->ad_buf, state->ad_partial_len);
+        opp_absorb_data(&state->Ma, state->ad_buf, state->ad_partial_len, true);
         state->ad_partial_len = 0;
     }
 
     if (state->partial_len > 0) {
         if (state->enc) {
-            opp_encrypt_lastblock(&state->Se, &state->Le, out, state->buf, state->partial_len);
+            opp_encrypt_data(&state->Me, out, state->buf, state->partial_len, true);
         } else {
-            opp_decrypt_lastblock(&state->Se, &state->Le, out, state->buf, state->partial_len);
+            opp_decrypt_data(&state->Me, out, state->buf, state->partial_len, true);
         }
         out += state->partial_len;
         *olen += state->partial_len;
@@ -477,10 +458,10 @@ bool finalize_areion_256_opp_ref(uint8_t *out, size_t *olen, size_t olimit, uint
     }
 
     if (state->enc) {
-        opp_finalise(state->Sa, state->Se, state->Le, tag);
+        opp_finalise(&state->Ma, &state->Me, tag);
     } else {
         unsigned char tag_computed[BYTES(OPP_T)];
-        opp_finalise(state->Sa, state->Se, state->Le, tag_computed);
+        opp_finalise(&state->Ma, &state->Me, tag_computed);
         if (opp_verify_tag(tag_computed, tag) != 0) {
             return false;
         }

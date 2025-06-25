@@ -1,4 +1,4 @@
-/* Copyright (c) 2023 GMO Cybersecurity by Ierae, Inc. All rights reserved. */
+/* Copyright (c) 2025 GMO Cybersecurity by Ierae, Inc. All rights reserved. */
 
 #ifndef AREION_H
 #define AREION_H
@@ -6,7 +6,18 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
+
+#if defined(__x86_64__)
 #include <immintrin.h>
+
+typedef __m128i areion_word_t;
+
+#elif defined(__aarch64__)
+#include <arm_neon.h>
+
+typedef uint8x16_t areion_word_t;
+
+#endif
 
 //
 // areion primitives
@@ -16,26 +27,26 @@
 //
 // permute one block (256 bits)
 //   dst <- π_256(src)
-void permute_areion_256(__m128i dst[2], const __m128i src[2]);
+void permute_areion_256(areion_word_t dst[2], const areion_word_t src[2]);
 
 // 256bit areion inverse permutation (π_256 inverse)
 //
 // inverse permute one block (256 bits)
 //   dst <- π_256^-1(src)
-void inverse_areion_256(__m128i dst[2], const __m128i src[2]);
+void inverse_areion_256(areion_word_t dst[2], const areion_word_t src[2]);
 
 
 // 512bit areion permutation (π_512)
 //
 // permute one block (512 bits)
 //   dst <- π_512(src)
-void permute_areion_512(__m128i dst[4], const __m128i src[4]);
+void permute_areion_512(areion_word_t dst[4], const areion_word_t src[4]);
 
 // 512bit areion inverse permutation (π_512 inverse)
 //
 // inverse permute one block (512 bits)
 //   dst <- π_512^-1(src)
-void inverse_areion_512(__m128i dst[4], const __m128i src[4]);
+void inverse_areion_512(areion_word_t dst[4], const areion_word_t src[4]);
 
 //
 // areion primitives with uint8_t interface
@@ -52,7 +63,6 @@ void permute_areion_256u8(uint8_t dst[32], const uint8_t src[32]);
 // inverse permute one block (256 bits)
 //   dst <- π_256^-1(src)
 void inverse_areion_256u8(uint8_t dst[32], const uint8_t src[32]);
-
 
 // 512bit areion permutation (π_512)
 //
@@ -103,7 +113,7 @@ void encrypt_areion_256_opp(
 // out
 //   m: plaintext.  need clen bytes buffer.
 // return
-//   true if tag is verified successfully, otherwise false
+//   0 if tag is verified successfully, otherwise 1
 int decrypt_areion_256_opp(
     uint8_t *m,
     const uint8_t tag[AREION_256_OPP_TAG_LEN],
@@ -145,7 +155,7 @@ void encrypt_areion_512_opp(
 // out
 //   m: plaintext.  need clen bytes buffer.
 // return
-//   true if tag is verified successfully, otherwise false
+//   0 if tag is verified successfully, otherwise 1
 int decrypt_areion_512_opp(
     uint8_t *m,
     const uint8_t tag[AREION_512_OPP_TAG_LEN],
@@ -246,5 +256,41 @@ bool update_areion_512_opp(uint8_t *out, size_t *olen, size_t olimit, const uint
 //   tag: return tag value on encryption, pass tag value on decryption
 //   state: AREION-512-OPP state
 bool finalize_areion_512_opp(uint8_t *out, size_t *olen, size_t olimit, uint8_t *tag, areion_512_opp_t *state);
+
+//
+// Hash functions
+//
+
+// Davies-Meyer hash function with areion-256
+//
+// in
+//   message: 32byte input message
+// out
+//   hash_value: 32byte hash value output
+void crypto_hash_areion_256_dm(
+    const uint8_t message[32],
+    uint8_t hash_value[32]);
+
+// Davies-Meyer hash function with areion-512
+//
+// in
+//   message: 64byte input message
+// out
+//   hash_value: 32byte output hash value
+void crypto_hash_areion_512_dm(
+    const uint8_t message[64],
+    uint8_t hash_value[32]);
+
+#define CRYPTO_HASH_AREION_MD_LEN 32
+
+// Merkle-Damgård hash function with areion-256
+//
+// in
+//   message, mlen: input message and length
+// out
+//   hash_value: 32 byte hash value output
+void crypto_hash_areion_md(
+    const uint8_t *message, size_t mlen,
+    uint8_t hash_value[CRYPTO_HASH_AREION_MD_LEN]);
 
 #endif
